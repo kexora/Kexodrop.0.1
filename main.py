@@ -1,32 +1,30 @@
 import os
-import requests
 import yt_dlp
-from telegram import ChatAction
-from telegram.ext import Updater, MessageHandler, Filters
+import requests
+import asyncio
+from telegram import Update
+from telegram.constants import ChatAction
+from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
-# Telegram Bot Token
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
 MAX_FILE_SIZE_MB = 100
 
-# Size check (HEAD request)
-def is_under_100mb(url):
+async def is_under_100mb(url: str) -> bool:
     try:
-        response = requests.head(url, allow_redirects=True)
+        response = requests.head(url, allow_redirects=True, timeout=10)
         size_bytes = int(response.headers.get('Content-Length', 0))
         return size_bytes < (MAX_FILE_SIZE_MB * 1024 * 1024)
     except Exception as e:
-        print("Size check failed, allowing:", e)
-        return True  # fallback if HEAD fails
+        print(f"Size check failed: {e}")
+        return True  # Proceed if unable to check
 
-# yt-dlp based download with cookies
-def download_video(url):
+def download_video(url: str) -> str:
     ydl_opts = {
         'outtmpl': 'video.%(ext)s',
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4',
+        'format': 'mp4/best',
         'merge_output_format': 'mp4',
         'quiet': True,
-        'cookies': 'cookies.txt'  # make sure this file exists
+        'cookies': 'cookies.txt',  # For private video support
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -36,43 +34,57 @@ def download_video(url):
             filename = filename.rsplit('.', 1)[0] + '.mp4'
         return filename
 
-# Main handler
-def handle_message(update, context):
-    user_text = update.message.text.lower()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text.strip().lower()
 
-    # Greeting
-    if any(word in user_text for word in ["hello", "hi", "jai", "jai ho"]):
-        update.message.reply_text("Welcome to Kexodrop!")
+    if any(greet in user_text for greet in ["hello", "hi", "jai", "jai ho"]):
+        await update.message.reply_text("Welcome to Kexodrop!")
         return
 
-    # If it's a link
     if user_text.startswith("http"):
-        update.message.reply_text("Checking link...")
+        msgs_to_delete = []
 
-        if is_under_100mb(user_text):
-            update.message.reply_text("Searching...")
-            update.message.reply_text("Wait...")
-            context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_VIDEO)
+        msg1 = await update.message.reply_text("Checking link...")
+        msgs_to_delete.append(msg1.message_id)
 
-            try:
-                video_path = download_video(user_text)
-                context.bot.send_video(chat_id=update.effective_chat.id, video=open(video_path, 'rb'))
-                os.remove(video_path)
-            except Exception as e:
-                print("Error during download/send:", e)
-                update.message.reply_text("Sorry, video couldn't be downloaded. It might be private or blocked.")
-        else:
-            update.message.reply_text("File is too large (over 100MB).")
+        if not await is_under_100mb(user_text):
+            await update.message.reply_text(f"File is larger than {MAX_FILE_SIZE_MB}MB.")
+            return
+
+        msg2 = await update.message.reply_text("Searching...")
+        msgs_to_delete.append(msg2.message_id)
+
+        msg3 = await update.message.reply_text("Wait...")
+        msgs_to_delete.append(msg3.message_id)
+
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_VIDEO)
+
+        try:
+            video_path = await asyncio.to_thread(download_video, user_text)
+
+            # Delete temporary bot messages
+            for msg_id in msgs_to_delete:
+                try:
+                    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_id)
+                except:
+                    pass
+
+            with open(video_path, 'rb') as video_file:
+                await update.message.reply_video(video=video_file)
+
+            os.remove(video_path)
+
+        except Exception as e:
+            print("Download error:", e)
+            await update.message.reply_text("Sorry, video couldn't be downloaded. It might be private or blocked.")
     else:
-        update.message.reply_text("Send a valid video link or say hello!")
+        await update.message.reply_text("Send a valid video link or say hello!")
 
-# Entry point
-def main():
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    updater.start_polling()
-    updater.idle()
+async def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    await app.run_polling()
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
