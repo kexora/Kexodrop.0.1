@@ -1,11 +1,11 @@
 services:
-  - type: worker
-    name: kexodrop
+  - type: web
+    name: kexodrop-bot
     env: python
-    buildCommand: ""
-    startCommand: python main.py
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 -m asyncio run main.py
     envVars:
       - key: BOT_TOKEN
-        sync: false
-      - key: ADMIN_ID
-        sync: false
+        sync: false  # Set this in the Render dashboard instead of hardcoding here
